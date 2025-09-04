@@ -21,9 +21,9 @@ func (this PSQL) Cat(path string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	rows, err := this.db.QueryContext(this.ctx, `
-        SELECT *
-            FROM "`+l.table+`"
-            WHERE "`+columnName+`"=$1
+		SELECT *
+			FROM "`+l.table+`"
+			WHERE "`+columnName+`"=$1
     `, l.row)
 	if err != nil {
 		return nil, err
@@ -53,17 +53,34 @@ func (this PSQL) Cat(path string) (io.ReadCloser, error) {
 	forms := make([]FormElement, len(c))
 	for i, _ := range columns {
 		forms[i] = createFormElement(col[i], columns[i])
+		if columnComment := _findCommentColumn(this.ctx, this.db, l.table, columns[i].Name); columnComment != "" {
+			forms[i].Description = columnComment
+		}
 		if slices.Contains(columns[i].Constraint, "PRIMARY KEY") && forms[i].Value != nil {
 			forms[i].ReadOnly = true
 		} else if slices.Contains(columns[i].Constraint, "FOREIGN KEY") {
 			if link, err := _findRelation(this.ctx, this.db, columns[i]); err == nil {
-				forms[i].Description = _createDescription(columns[i], link)
 				if len(link.values) > 0 {
 					forms[i].Type = "select"
 					forms[i].Opts = link.values
 				}
+				if forms[i].Description == "" {
+					forms[i].Description = _createDescription(columns[i], link)
+				}
 			}
+		} else if values, err := _findEnumValues(this.ctx, this.db, columns[i]); err == nil && len(values) > 0 {
+			forms[i].Type = "select"
+			forms[i].Opts = values
 		}
+	}
+	if comment := _findCommentTable(this.ctx, this.db, l.table); comment != "" {
+		forms = append([]FormElement{
+			{
+				Name:        "banner",
+				Type:        "hidden",
+				Description: comment,
+			},
+		}, forms...)
 	}
 	b, err := Form{Elmnts: forms}.MarshalJSON()
 	if err != nil {
@@ -74,21 +91,46 @@ func (this PSQL) Cat(path string) (io.ReadCloser, error) {
 
 func _createDescription(el Column, link LocationColumn) string {
 	if slices.Contains(el.Constraint, "FOREIGN KEY") {
-		return fmt.Sprintf("points to <%s> → <%s>", link.table, link.column)
+		return fmt.Sprintf("points to [<%s> → <%s>](/files/%s/)", link.table, link.column, link.table)
 	}
 	return ""
+}
+
+func _findCommentTable(ctx context.Context, db *sql.DB, tableName string) string {
+	var comment string
+	if err := db.QueryRowContext(ctx, `
+		SELECT obj_description(c.oid)
+				FROM pg_class c
+				WHERE c.relname = $1 AND c.relkind = 'r'
+	`, tableName).Scan(&comment); err != nil {
+		return ""
+	}
+	return comment
+}
+
+func _findCommentColumn(ctx context.Context, db *sql.DB, tableName, columnName string) string {
+	var comment string
+	if err := db.QueryRowContext(ctx, `
+		SELECT col_description(c.oid, a.attnum)
+				FROM pg_class c
+				JOIN pg_attribute a ON a.attrelid = c.oid
+				WHERE c.relname = $1 AND a.attname = $2 AND c.relkind = 'r'
+	`, tableName, columnName).Scan(&comment); err != nil {
+		return ""
+	}
+	return comment
 }
 
 func _findRelation(ctx context.Context, db *sql.DB, el Column) (LocationColumn, error) {
 	l := LocationColumn{}
 	rows, err := db.QueryContext(ctx, `
-        SELECT ccu.table_name, ccu.column_name
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu USING (constraint_name)
-            JOIN information_schema.constraint_column_usage AS ccu USING (constraint_name)
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-                AND tc.table_name = $1
-                AND kcu.column_name = $2
+		SELECT ccu.table_name, ccu.column_name
+			FROM information_schema.table_constraints AS tc
+			JOIN information_schema.key_column_usage AS kcu USING (constraint_name)
+			JOIN information_schema.constraint_column_usage AS ccu USING (constraint_name)
+			WHERE tc.constraint_type = 'FOREIGN KEY'
+				AND tc.table_name = $1
+				AND kcu.column_name = $2
     `, el.Table, el.Name)
 	if err != nil {
 		return l, err
@@ -116,4 +158,29 @@ func _findRelation(ctx context.Context, db *sql.DB, el Column) (LocationColumn, 
 		l.values = append(l.values, value)
 	}
 	return l, nil
+}
+
+func _findEnumValues(ctx context.Context, db *sql.DB, el Column) ([]string, error) {
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+			FROM pg_type
+			WHERE typname = $1 AND typtype = 'e'
+	`, el.Type).Scan(&count); err != nil || count == 0 {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT unnest(enum_range(NULL::`+el.Type+`))`)
+	if err != nil {
+		return nil, err
+	}
+	values := []string{}
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	rows.Close()
+	return values, nil
 }

@@ -221,6 +221,7 @@ export async function init() {
     const setup_cache = () => {
         cache = new InMemoryCache();
         if (!("indexedDB" in window)) return;
+        else if (window.self !== window.top) return;
 
         cache = assert.truthy(new IndexDBCache());
         return cache.db.catch((err) => {
@@ -253,6 +254,9 @@ export default function() {
 let backendID = "";
 export function currentBackend() {
     return backendID;
+}
+export function updateBackend(id) {
+    backendID = id;
 }
 
 export function currentShare() {
