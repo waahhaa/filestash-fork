@@ -36,7 +36,7 @@ require (
 	github.com/tidwall/sjson v1.2.5
 	github.com/vmware/go-nfs-client v0.0.0-20190605212624-d43b92724c1b
 	golang.org/x/crypto v0.46.0
-	golang.org/x/image v0.16.0
+	golang.org/x/image v0.18.0
 	golang.org/x/net v0.48.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.19.0
